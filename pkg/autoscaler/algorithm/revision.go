@@ -54,7 +54,7 @@ func (alg CorrectedInstancesAlgorithm) GetCorrectedInstances() int32 {
 func (alg CorrectedInstancesAlgorithm) getCorrectedInstancesForPanic() int32 {
 	corrected := alg.RecommendedInstances
 	if pastSample, ok := alg.History.MinCorrectedForPanic.GetBest(alg.CurrentInstances); ok && pastSample > 0 {
-		relativeConstraint := pastSample + int32(float64(pastSample)*float64(*alg.Behavior.ScaleUp.PanicPolicy.Percent)/100.0)
+		relativeConstraint := pastSample + ceilPercent(pastSample, *alg.Behavior.ScaleUp.PanicPolicy.Percent)
 		corrected = min(corrected, relativeConstraint)
 	}
 	corrected = max(corrected, alg.CurrentInstances)
@@ -81,7 +81,7 @@ func (alg CorrectedInstancesAlgorithm) getCorrectedInstancesForStableScaleDown()
 	}
 	if pastSample, ok := alg.History.MaxCorrected.GetBest(alg.CurrentInstances); ok {
 		absoluteConstraint := pastSample - *alg.Behavior.ScaleDown.Instances
-		relativeConstraint := pastSample - pastSample*(*alg.Behavior.ScaleDown.Percent)/100
+		relativeConstraint := pastSample - ceilPercent(pastSample, *alg.Behavior.ScaleDown.Percent)
 		var constraint int32
 		switch alg.Behavior.ScaleDown.SelectPolicy {
 		case v1alpha1.SelectPolicyOr:
@@ -104,7 +104,7 @@ func (alg CorrectedInstancesAlgorithm) getCorrectedInstancesForStableScaleUp() i
 	}
 	if pastSample, ok := alg.History.MinCorrectedForStable.GetBest(alg.CurrentInstances); ok {
 		absoluteConstraint := pastSample + *alg.Behavior.ScaleUp.StablePolicy.Instances
-		relativeConstraint := pastSample + pastSample*(*alg.Behavior.ScaleUp.StablePolicy.Percent)/100
+		relativeConstraint := pastSample + ceilPercent(pastSample, *alg.Behavior.ScaleUp.StablePolicy.Percent)
 		var constraint int32
 		switch alg.Behavior.ScaleUp.StablePolicy.SelectPolicy {
 		case v1alpha1.SelectPolicyOr:
@@ -118,4 +118,9 @@ func (alg CorrectedInstancesAlgorithm) getCorrectedInstancesForStableScaleUp() i
 	}
 	corrected = max(corrected, alg.CurrentInstances)
 	return corrected
+}
+
+// ceilPercent returns percent% of value, rounded up.
+func ceilPercent(value, percent int32) int32 {
+	return int32((int64(value)*int64(percent) + 99) / 100)
 }

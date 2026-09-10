@@ -186,6 +186,32 @@ func TestGetCorrectedInstances(t *testing.T) {
 			expectedCorrected: 8,
 		},
 		{
+			name: "when stable scale up percent resolves below one instance then scale up is still allowed",
+			args: CorrectedInstancesAlgorithm{
+				IsPanic:              false,
+				History:              emptyHistory(),
+				Behavior:             makeBehavior(1, 100, v1alpha1.SelectPolicyOr, 1, 10, v1alpha1.SelectPolicyAnd, 1000),
+				MinInstances:         1,
+				MaxInstances:         100,
+				CurrentInstances:     3,
+				RecommendedInstances: 10,
+			},
+			expectedCorrected: 4,
+		},
+		{
+			name: "when stable scale down percent resolves below one instance then scale down is still allowed",
+			args: CorrectedInstancesAlgorithm{
+				IsPanic:              false,
+				History:              emptyHistory(),
+				Behavior:             makeBehavior(0, 10, v1alpha1.SelectPolicyOr, 1, 100, v1alpha1.SelectPolicyOr, 1000),
+				MinInstances:         1,
+				MaxInstances:         100,
+				CurrentInstances:     3,
+				RecommendedInstances: 1,
+			},
+			expectedCorrected: 2,
+		},
+		{
 			name: "when stable scale up and unknown select policy then no constraint applied",
 			args: CorrectedInstancesAlgorithm{
 				IsPanic:              false,
@@ -257,6 +283,19 @@ func TestGetCorrectedInstances(t *testing.T) {
 				RecommendedInstances: 15,
 			},
 			expectedCorrected: 10,
+		},
+		{
+			name: "when panic percent resolves below one instance then scale up is still allowed",
+			args: CorrectedInstancesAlgorithm{
+				IsPanic:              true,
+				History:              emptyHistory(),
+				Behavior:             makeBehavior(1, 100, v1alpha1.SelectPolicyOr, 1, 100, v1alpha1.SelectPolicyOr, 10),
+				MinInstances:         1,
+				MaxInstances:         100,
+				CurrentInstances:     3,
+				RecommendedInstances: 10,
+			},
+			expectedCorrected: 4,
 		},
 		{
 			name: "when panic and min corrected history is smaller then constraint tightens",
