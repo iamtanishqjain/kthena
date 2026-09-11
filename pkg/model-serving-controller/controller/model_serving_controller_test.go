@@ -8928,3 +8928,15 @@ func TestResolveRoleTemplateHash_ReturnsEmptyWhenControllerRevisionNotFound(t *t
 	hash := controller.resolveRoleTemplateHash(ms, roleName, pod)
 	assert.Equal(t, "", hash)
 }
+
+func TestSyncModelServingWithoutServingGroups(t *testing.T) {
+	ms := createStandardModelServing("test-ms-no-groups", 0, 1)
+	h := newTestController(t, ms)
+
+	require.NoError(t, h.controller.syncModelServing(context.Background(), "default/test-ms-no-groups"))
+
+	latest, err := h.kthenaClient.WorkloadV1alpha1().ModelServings("default").Get(
+		context.Background(), "test-ms-no-groups", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, utils.ModelServingRevision(ms), latest.Status.CurrentRevision)
+}
