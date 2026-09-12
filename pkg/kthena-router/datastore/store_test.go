@@ -1717,7 +1717,7 @@ func TestStoreMatchesModelBoosterSpecName(t *testing.T) {
 
 type fakePodRuntimeInspector struct {
 	metricsFn    func(string, *corev1.Pod, uint32, map[string]*dto.Histogram) (map[string]float64, map[string]*dto.Histogram)
-	modelsFn     func(string, *corev1.Pod, uint32) ([]string, error)
+	modelsFn     func(string, *corev1.Pod, uint32, string) ([]string, error)
 	metricsCalls atomic.Int64
 	modelsCalls  atomic.Int64
 }
@@ -1730,12 +1730,12 @@ func (f *fakePodRuntimeInspector) GetPodMetrics(engine string, pod *corev1.Pod, 
 	return f.metricsFn(engine, pod, port, previousHistogram)
 }
 
-func (f *fakePodRuntimeInspector) GetPodModels(engine string, pod *corev1.Pod, port uint32) ([]string, error) {
+func (f *fakePodRuntimeInspector) GetPodModels(engine string, pod *corev1.Pod, port uint32, apiKey string) ([]string, error) {
 	f.modelsCalls.Add(1)
 	if f.modelsFn == nil {
 		return nil, nil
 	}
-	return f.modelsFn(engine, pod, port)
+	return f.modelsFn(engine, pod, port, apiKey)
 }
 
 func newStore(inspector ...PodRuntimeInspector) *store {
@@ -1942,7 +1942,7 @@ func TestAddOrUpdatePod_MetricsPreservedOnUpdate(t *testing.T) {
 				metricsFn: func(_ string, _ *corev1.Pod, _ uint32, _ map[string]*dto.Histogram) (map[string]float64, map[string]*dto.Histogram) {
 					return tc.initialMetrics, tc.initialHist
 				},
-				modelsFn: func(_ string, _ *corev1.Pod, _ uint32) ([]string, error) {
+				modelsFn: func(_ string, _ *corev1.Pod, _ uint32, _ string) ([]string, error) {
 					return tc.initialModels, nil
 				},
 			}
@@ -2015,7 +2015,7 @@ func TestAddOrUpdatePod_NewPodStillFetchesMetrics(t *testing.T) {
 				utils.RequestRunningNum: 2,
 			}, map[string]*dto.Histogram{}
 		},
-		modelsFn: func(_ string, _ *corev1.Pod, _ uint32) ([]string, error) {
+		modelsFn: func(_ string, _ *corev1.Pod, _ uint32, _ string) ([]string, error) {
 			return []string{"base-model"}, nil
 		},
 	}
@@ -2042,6 +2042,40 @@ func TestAddOrUpdatePod_NewPodStillFetchesMetrics(t *testing.T) {
 	assert.InDelta(t, 2.0, podInfo.GetRequestRunningNum(), 1e-9)
 }
 
+func TestAddOrUpdatePod_PassesModelServerAPIKeyToBackend(t *testing.T) {
+	var gotAPIKey string
+	inspector := &fakePodRuntimeInspector{
+		modelsFn: func(_ string, _ *corev1.Pod, _ uint32, apiKey string) ([]string, error) {
+			gotAPIKey = apiKey
+			return []string{"base-model"}, nil
+		},
+	}
+	s := newStore(inspector)
+
+	ms := createTestModelServer("default", "ms1", aiv1alpha1.VLLM)
+	ms.Spec.WorkloadPort.Port = 8000
+	ms.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "vllm-key"},
+		Key:                  "api-key",
+	}
+	s.AddOrUpdateModelServer(ms, sets.New[types.NamespacedName]())
+	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "vllm-key"},
+		// Trailing newline is what kubectl create secret --from-file produces.
+		Data: map[string][]byte{"api-key": []byte("s3cret\n")},
+	}))
+
+	pod := createTestPod("default", "fresh-pod")
+	pod.Status.PodIP = "10.0.0.1"
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations["kthena.io/engine"] = "vLLM"
+	assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{ms}))
+
+	assert.Equal(t, "s3cret", gotAPIKey)
+}
+
 func TestAddOrUpdatePod_ModelServerChangePreservesMetrics(t *testing.T) {
 	inspector := &fakePodRuntimeInspector{
 		metricsFn: func(_ string, _ *corev1.Pod, _ uint32, _ map[string]*dto.Histogram) (map[string]float64, map[string]*dto.Histogram) {
@@ -2053,7 +2087,7 @@ func TestAddOrUpdatePod_ModelServerChangePreservesMetrics(t *testing.T) {
 				utils.TTFT:              0.2,
 			}, map[string]*dto.Histogram{}
 		},
-		modelsFn: func(_ string, _ *corev1.Pod, _ uint32) ([]string, error) {
+		modelsFn: func(_ string, _ *corev1.Pod, _ uint32, _ string) ([]string, error) {
 			return []string{"model-a"}, nil
 		},
 	}
@@ -2630,7 +2664,7 @@ func TestStoreRunBoundedConcurrency(t *testing.T) {
 				metricsCalls.Add(1)
 				return nil, nil
 			},
-			modelsFn: func(_ string, _ *corev1.Pod, _ uint32) ([]string, error) {
+			modelsFn: func(_ string, _ *corev1.Pod, _ uint32, _ string) ([]string, error) {
 				modelsCalls.Add(1)
 				return nil, nil
 			},
