@@ -45,6 +45,7 @@ import (
 
 	aiv1alpha1 "github.com/volcano-sh/kthena/pkg/apis/networking/v1alpha1"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/backend"
+	"github.com/volcano-sh/kthena/pkg/kthena-router/providers"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/utils"
 )
 
@@ -172,7 +173,7 @@ type CallbackFunc func(data EventData)
 // PodRuntimeInspector fetches runtime metrics and loaded models for a pod.
 type PodRuntimeInspector interface {
 	GetPodMetrics(engine string, pod *corev1.Pod, port uint32, previousHistogram map[string]*dto.Histogram) (map[string]float64, map[string]*dto.Histogram)
-	GetPodModels(engine string, pod *corev1.Pod, port uint32) ([]string, error)
+	GetPodModels(engine string, pod *corev1.Pod, port uint32, apiKey string) ([]string, error)
 }
 
 type realPodRuntimeInspector struct{}
@@ -181,8 +182,8 @@ func (realPodRuntimeInspector) GetPodMetrics(engine string, pod *corev1.Pod, por
 	return backend.GetPodMetrics(engine, pod, port, previousHistogram)
 }
 
-func (realPodRuntimeInspector) GetPodModels(engine string, pod *corev1.Pod, port uint32) ([]string, error) {
-	return backend.GetPodModels(engine, pod, port)
+func (realPodRuntimeInspector) GetPodModels(engine string, pod *corev1.Pod, port uint32, apiKey string) ([]string, error) {
+	return backend.GetPodModels(engine, pod, port, apiKey)
 }
 
 type Option func(*store)
@@ -1803,7 +1804,7 @@ func (s *store) updatePodModels(podInfo *PodInfo) {
 		return
 	}
 	port := s.getPodWorkloadPort(podInfo)
-	models, err := s.getPodRuntimeInspector().GetPodModels(engine, podObj, port)
+	models, err := s.getPodRuntimeInspector().GetPodModels(engine, podObj, port, s.getPodAPIKey(podInfo))
 	if err != nil {
 		klog.V(4).Infof("failed to get models of pod %s/%s: %v", podObj.GetNamespace(), podObj.GetName(), err)
 		return
@@ -1829,6 +1830,32 @@ func (s *store) getPodWorkloadPort(podInfo *PodInfo) uint32 {
 		return uint32(port)
 	}
 	return 0
+}
+
+// getPodAPIKey returns the API key configured by the pod's ModelServers, or ""
+// when none is set or the Secret is not cached. Visits them in name order so a
+// pod matched by several resolves the same way every time.
+func (s *store) getPodAPIKey(podInfo *PodInfo) string {
+	msNames := podInfo.GetModelServers().UnsortedList()
+	sort.Slice(msNames, func(i, j int) bool { return msNames[i].String() < msNames[j].String() })
+
+	for _, msName := range msNames {
+		ms := s.GetModelServer(msName)
+		if ms == nil || ms.Spec.APIKeySecretRef == nil {
+			continue
+		}
+		ref := ms.Spec.APIKeySecretRef
+		secret := s.GetSecret(types.NamespacedName{Namespace: ms.Namespace, Name: ref.Name})
+		if secret == nil {
+			continue
+		}
+		// A Secret written from a file carries a trailing newline, which
+		// http.Transport rejects outright.
+		if key, err := providers.NormalizeCredential(secret.Data[ref.Key]); err == nil {
+			return key
+		}
+	}
+	return ""
 }
 
 func getPreviousHistogram(podinfo *PodInfo) map[string]*dto.Histogram {
