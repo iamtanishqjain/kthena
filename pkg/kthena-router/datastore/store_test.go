@@ -2194,32 +2194,38 @@ func TestAddOrUpdatePod_SkipsDiscoveryWhenAPIKeyIsMisconfigured(t *testing.T) {
 }
 
 func TestAddOrUpdatePod_TakesPortAndAPIKeyFromTheSameModelServer(t *testing.T) {
-	var gotPort uint32
-	var gotAPIKey string
+	type call struct {
+		port   uint32
+		apiKey string
+	}
+	var calls []call
 	inspector := &fakePodRuntimeInspector{
 		modelsFn: func(_ string, _ *corev1.Pod, port uint32, apiKey string) ([]string, error) {
-			gotPort, gotAPIKey = port, apiKey
+			calls = append(calls, call{port, apiKey})
 			return []string{"base-model"}, nil
 		},
 	}
 	s := newStore(inspector)
 
-	// withPort declares the port, noPort declares a key. Only withPort's
-	// settings may be used, or the key would be sent to a port it does not
-	// belong to. Names are chosen so noPort sorts first.
-	noPort := createTestModelServer("default", "aaa-no-port", aiv1alpha1.VLLM)
-	noPort.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
-		LocalObjectReference: corev1.LocalObjectReference{Name: "vllm-key"},
-		Key:                  "api-key",
+	// Two ModelServers select the same pod, each with its own port and key.
+	first := createTestModelServer("default", "aaa", aiv1alpha1.VLLM)
+	first.Spec.WorkloadPort.Port = 8000
+	first.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "keys"},
+		Key:                  "aaa",
 	}
-	withPort := createTestModelServer("default", "zzz-with-port", aiv1alpha1.VLLM)
-	withPort.Spec.WorkloadPort.Port = 8000
+	second := createTestModelServer("default", "zzz", aiv1alpha1.VLLM)
+	second.Spec.WorkloadPort.Port = 9000
+	second.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "keys"},
+		Key:                  "zzz",
+	}
 
-	s.AddOrUpdateModelServer(noPort, sets.New[types.NamespacedName]())
-	s.AddOrUpdateModelServer(withPort, sets.New[types.NamespacedName]())
+	s.AddOrUpdateModelServer(first, sets.New[types.NamespacedName]())
+	s.AddOrUpdateModelServer(second, sets.New[types.NamespacedName]())
 	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "vllm-key"},
-		Data:       map[string][]byte{"api-key": []byte("s3cret")},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "keys"},
+		Data:       map[string][]byte{"aaa": []byte("key-aaa"), "zzz": []byte("key-zzz")},
 	}))
 
 	pod := createTestPod("default", "fresh-pod")
@@ -2228,10 +2234,17 @@ func TestAddOrUpdatePod_TakesPortAndAPIKeyFromTheSameModelServer(t *testing.T) {
 		pod.Annotations = make(map[string]string)
 	}
 	pod.Annotations["kthena.io/engine"] = "vLLM"
-	assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{noPort, withPort}))
 
-	assert.Equal(t, uint32(8000), gotPort)
-	assert.Equal(t, "", gotAPIKey, "the key belongs to a ModelServer that did not supply the port")
+	// Repeat: the ModelServer set is a map, so one pass can pair them by luck.
+	for i := 0; i < 20; i++ {
+		assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{first, second}))
+		s.updatePodModels(s.GetPodInfo(utils.GetNamespaceName(pod)))
+	}
+
+	assert.NotEmpty(t, calls)
+	for _, c := range calls {
+		assert.Equal(t, call{8000, "key-aaa"}, c, "port and key must come from the same ModelServer")
+	}
 }
 
 func TestAddOrUpdatePod_ModelServerChangePreservesMetrics(t *testing.T) {
