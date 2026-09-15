@@ -1772,8 +1772,17 @@ func (s *store) updatePodModels(podInfo *PodInfo) {
 	if podObj.Status.PodIP == "" {
 		return
 	}
-	port := s.getPodWorkloadPort(podInfo)
-	models, err := s.getPodRuntimeInspector().GetPodModels(engine, podObj, port, s.getPodAPIKey(podInfo))
+	ms := s.modelServerForPod(podInfo)
+	apiKey, err := modelServerAPIKey(s, ms)
+	if err != nil {
+		// Configured but unusable. Probing anonymously would look like success
+		// against a backend that happens not to enforce the key, so skip instead.
+		klog.V(4).Infof("skipping model discovery for pod %s/%s: %v",
+			podObj.GetNamespace(), podObj.GetName(), err)
+		return
+	}
+
+	models, err := s.getPodRuntimeInspector().GetPodModels(engine, podObj, workloadPort(ms), apiKey)
 	if err != nil {
 		klog.V(4).Infof("failed to get models of pod %s/%s: %v", podObj.GetNamespace(), podObj.GetName(), err)
 		return
@@ -1783,42 +1792,63 @@ func (s *store) updatePodModels(podInfo *PodInfo) {
 }
 
 func (s *store) getPodWorkloadPort(podInfo *PodInfo) uint32 {
-	modelServers := podInfo.GetModelServers()
-	for msName := range modelServers {
-		if msValue, ok := s.modelServer.Load(msName); ok {
-			ms := msValue.(*modelServer).getModelServer()
-			if ms != nil && ms.Spec.WorkloadPort.Port > 0 {
-				return uint32(ms.Spec.WorkloadPort.Port)
-			}
-		}
-	}
-	return 0
+	return workloadPort(s.modelServerForPod(podInfo))
 }
 
-// getPodAPIKey returns the API key configured by the pod's ModelServers, or ""
-// when none is set or the Secret is not cached. Visits them in name order so a
-// pod matched by several resolves the same way every time.
-func (s *store) getPodAPIKey(podInfo *PodInfo) string {
+func workloadPort(ms *aiv1alpha1.ModelServer) uint32 {
+	if ms == nil || ms.Spec.WorkloadPort.Port <= 0 {
+		return 0
+	}
+	return uint32(ms.Spec.WorkloadPort.Port)
+}
+
+// modelServerForPod picks the ModelServer whose settings apply to this pod. A
+// pod can match several, so prefer one that declares a workload port and break
+// ties by name: the port and the API key must come from the same ModelServer,
+// or the router would send one ModelServer's credential to another's port.
+func (s *store) modelServerForPod(podInfo *PodInfo) *aiv1alpha1.ModelServer {
 	msNames := podInfo.GetModelServers().UnsortedList()
 	sort.Slice(msNames, func(i, j int) bool { return msNames[i].String() < msNames[j].String() })
 
+	var fallback *aiv1alpha1.ModelServer
 	for _, msName := range msNames {
 		ms := s.GetModelServer(msName)
-		if ms == nil || ms.Spec.APIKeySecretRef == nil {
+		if ms == nil {
 			continue
 		}
-		ref := ms.Spec.APIKeySecretRef
-		secret := s.GetSecret(types.NamespacedName{Namespace: ms.Namespace, Name: ref.Name})
-		if secret == nil {
-			continue
+		if ms.Spec.WorkloadPort.Port > 0 {
+			return ms
 		}
-		// A Secret written from a file carries a trailing newline, which
-		// http.Transport rejects outright.
-		if key, err := providers.NormalizeCredential(secret.Data[ref.Key]); err == nil {
-			return key
+		if fallback == nil {
+			fallback = ms
 		}
 	}
-	return ""
+	return fallback
+}
+
+// modelServerAPIKey resolves the ModelServer's API key. "" with no error means
+// none is configured; an error means one is configured but unusable, which is a
+// different situation and must not fall back to an anonymous request.
+func modelServerAPIKey(s *store, ms *aiv1alpha1.ModelServer) (string, error) {
+	if ms == nil || ms.Spec.APIKeySecretRef == nil {
+		return "", nil
+	}
+
+	ref := ms.Spec.APIKeySecretRef
+	secretName := types.NamespacedName{Namespace: ms.Namespace, Name: ref.Name}
+	secret := s.GetSecret(secretName)
+	if secret == nil {
+		return "", fmt.Errorf("secret %s is not available, check it exists and carries the %s label",
+			secretName, aiv1alpha1.ExternalModelProviderSecretLabelKey)
+	}
+
+	// A Secret written from a file carries a trailing newline, which
+	// http.Transport rejects outright.
+	key, err := providers.NormalizeCredential(secret.Data[ref.Key])
+	if err != nil {
+		return "", fmt.Errorf("key %q in secret %s is unusable: %w", ref.Key, secretName, err)
+	}
+	return key, nil
 }
 
 func getPreviousHistogram(podinfo *PodInfo) map[string]*dto.Histogram {
