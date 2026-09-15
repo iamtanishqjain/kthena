@@ -1804,10 +1804,9 @@ func (s *store) updatePodModels(podInfo *PodInfo) {
 		return
 	}
 	ms := s.modelServerForPod(podInfo)
-	apiKey, err := modelServerAPIKey(s, ms)
+	apiKey, err := s.modelServerAPIKey(ms)
 	if err != nil {
-		// Configured but unusable. Probing anonymously would look like success
-		// against a backend that happens not to enforce the key, so skip instead.
+		// Probing anonymously would hide the misconfiguration.
 		klog.V(4).Infof("skipping model discovery for pod %s/%s: %v",
 			podObj.GetNamespace(), podObj.GetName(), err)
 		return
@@ -1844,10 +1843,8 @@ func workloadPort(ms *aiv1alpha1.ModelServer) uint32 {
 	return uint32(ms.Spec.WorkloadPort.Port)
 }
 
-// modelServerForPod picks the ModelServer whose settings apply to this pod. A
-// pod can match several, so prefer one that declares a workload port and break
-// ties by name: the port and the API key must come from the same ModelServer,
-// or the router would send one ModelServer's credential to another's port.
+// modelServerForPod picks one ModelServer by name when a pod matches several,
+// so the port and the API key always come from the same one.
 func (s *store) modelServerForPod(podInfo *PodInfo) *aiv1alpha1.ModelServer {
 	msNames := podInfo.GetModelServers().UnsortedList()
 	sort.Slice(msNames, func(i, j int) bool { return msNames[i].String() < msNames[j].String() })
@@ -1868,10 +1865,9 @@ func (s *store) modelServerForPod(podInfo *PodInfo) *aiv1alpha1.ModelServer {
 	return fallback
 }
 
-// modelServerAPIKey resolves the ModelServer's API key. "" with no error means
-// none is configured; an error means one is configured but unusable, which is a
-// different situation and must not fall back to an anonymous request.
-func modelServerAPIKey(s *store, ms *aiv1alpha1.ModelServer) (string, error) {
+// modelServerAPIKey returns "" with no error when no key is configured, and an
+// error when one is configured but unusable. The two are not the same.
+func (s *store) modelServerAPIKey(ms *aiv1alpha1.ModelServer) (string, error) {
 	if ms == nil || ms.Spec.APIKeySecretRef == nil {
 		return "", nil
 	}
@@ -1884,8 +1880,8 @@ func modelServerAPIKey(s *store, ms *aiv1alpha1.ModelServer) (string, error) {
 			secretName, aiv1alpha1.ExternalModelProviderSecretLabelKey)
 	}
 
-	// A Secret written from a file carries a trailing newline, which
-	// http.Transport rejects outright.
+	// A Secret written from a file carries a trailing newline that
+	// http.Transport rejects.
 	key, err := providers.NormalizeCredential(secret.Data[ref.Key])
 	if err != nil {
 		return "", fmt.Errorf("key %q in secret %s is unusable: %w", ref.Key, secretName, err)
