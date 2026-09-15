@@ -2163,6 +2163,77 @@ func TestAddOrUpdatePod_PassesModelServerAPIKeyToBackend(t *testing.T) {
 	assert.Equal(t, "s3cret", gotAPIKey)
 }
 
+func TestAddOrUpdatePod_SkipsDiscoveryWhenAPIKeyIsMisconfigured(t *testing.T) {
+	inspector := &fakePodRuntimeInspector{
+		modelsFn: func(_ string, _ *corev1.Pod, _ uint32, _ string) ([]string, error) {
+			return []string{"base-model"}, nil
+		},
+	}
+	s := newStore(inspector)
+
+	ms := createTestModelServer("default", "ms1", aiv1alpha1.VLLM)
+	ms.Spec.WorkloadPort.Port = 8000
+	// Points at a Secret that is not in the cache, the shape of a typo or a
+	// Secret that was never labelled.
+	ms.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "wrong-name"},
+		Key:                  "api-key",
+	}
+	s.AddOrUpdateModelServer(ms, sets.New[types.NamespacedName]())
+
+	pod := createTestPod("default", "fresh-pod")
+	pod.Status.PodIP = "10.0.0.1"
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations["kthena.io/engine"] = "vLLM"
+	assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{ms}))
+
+	assert.Equal(t, int64(0), inspector.modelsCalls.Load(),
+		"a configured but unresolvable API key must not fall back to an anonymous probe")
+}
+
+func TestAddOrUpdatePod_TakesPortAndAPIKeyFromTheSameModelServer(t *testing.T) {
+	var gotPort uint32
+	var gotAPIKey string
+	inspector := &fakePodRuntimeInspector{
+		modelsFn: func(_ string, _ *corev1.Pod, port uint32, apiKey string) ([]string, error) {
+			gotPort, gotAPIKey = port, apiKey
+			return []string{"base-model"}, nil
+		},
+	}
+	s := newStore(inspector)
+
+	// withPort declares the port, noPort declares a key. Only withPort's
+	// settings may be used, or the key would be sent to a port it does not
+	// belong to. Names are chosen so noPort sorts first.
+	noPort := createTestModelServer("default", "aaa-no-port", aiv1alpha1.VLLM)
+	noPort.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "vllm-key"},
+		Key:                  "api-key",
+	}
+	withPort := createTestModelServer("default", "zzz-with-port", aiv1alpha1.VLLM)
+	withPort.Spec.WorkloadPort.Port = 8000
+
+	s.AddOrUpdateModelServer(noPort, sets.New[types.NamespacedName]())
+	s.AddOrUpdateModelServer(withPort, sets.New[types.NamespacedName]())
+	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "vllm-key"},
+		Data:       map[string][]byte{"api-key": []byte("s3cret")},
+	}))
+
+	pod := createTestPod("default", "fresh-pod")
+	pod.Status.PodIP = "10.0.0.1"
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations["kthena.io/engine"] = "vLLM"
+	assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{noPort, withPort}))
+
+	assert.Equal(t, uint32(8000), gotPort)
+	assert.Equal(t, "", gotAPIKey, "the key belongs to a ModelServer that did not supply the port")
+}
+
 func TestAddOrUpdatePod_ModelServerChangePreservesMetrics(t *testing.T) {
 	inspector := &fakePodRuntimeInspector{
 		metricsFn: func(_ string, _ *corev1.Pod, _ uint32, _ map[string]*dto.Histogram) (map[string]float64, map[string]*dto.Histogram) {
