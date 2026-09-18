@@ -16,6 +16,28 @@ limitations under the License.
 
 package controller
 
+import (
+	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog/v2"
+)
+
+// retryOrForget decides what happens to key after syncHandler returns. A failure
+// is requeued with backoff until maxRetries, then dropped. Success clears the
+// key's failure count so a later failure starts its retries from zero.
+func retryOrForget(queue workqueue.TypedRateLimitingInterface[any], resource, key string, err error) {
+	if err == nil {
+		queue.Forget(key)
+		return
+	}
+	if queue.NumRequeues(key) < maxRetries {
+		klog.Errorf("error syncing %s %q: %v, requeuing", resource, key, err)
+		queue.AddRateLimited(key)
+		return
+	}
+	klog.Errorf("giving up on syncing %s %q after %d retries: %v", resource, key, maxRetries, err)
+	queue.Forget(key)
+}
+
 // ResourceType identifies the informer resource represented by a QueueItem.
 type ResourceType string
 
