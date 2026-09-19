@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog/v2"
 )
 
 func TestRetryOrForget(t *testing.T) {
@@ -32,7 +33,7 @@ func TestRetryOrForget(t *testing.T) {
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[any]())
 		defer queue.ShutDown()
 
-		retryOrForget(queue, "gateway", key, syncErr)
+		retryOrForget(queue, "gateway", key, syncErr, klog.Errorf)
 		assert.Equal(t, 1, queue.NumRequeues(key))
 	})
 
@@ -41,9 +42,9 @@ func TestRetryOrForget(t *testing.T) {
 		defer queue.ShutDown()
 
 		for i := 0; i < maxRetries-1; i++ {
-			retryOrForget(queue, "gateway", key, syncErr)
+			retryOrForget(queue, "gateway", key, syncErr, klog.Errorf)
 		}
-		retryOrForget(queue, "gateway", key, nil)
+		retryOrForget(queue, "gateway", key, nil, klog.Errorf)
 		assert.Equal(t, 0, queue.NumRequeues(key))
 	})
 
@@ -52,8 +53,8 @@ func TestRetryOrForget(t *testing.T) {
 		defer queue.ShutDown()
 
 		for i := 0; i < maxRetries*2; i++ {
-			retryOrForget(queue, "gateway", key, syncErr)
-			retryOrForget(queue, "gateway", key, nil)
+			retryOrForget(queue, "gateway", key, syncErr, klog.Errorf)
+			retryOrForget(queue, "gateway", key, nil, klog.Errorf)
 			assert.Equal(t, 0, queue.NumRequeues(key))
 		}
 	})
@@ -63,11 +64,11 @@ func TestRetryOrForget(t *testing.T) {
 		defer queue.ShutDown()
 
 		for i := 0; i < maxRetries; i++ {
-			retryOrForget(queue, "gateway", key, syncErr)
+			retryOrForget(queue, "gateway", key, syncErr, klog.Errorf)
 		}
 		assert.Equal(t, maxRetries, queue.NumRequeues(key))
 
-		retryOrForget(queue, "gateway", key, syncErr)
+		retryOrForget(queue, "gateway", key, syncErr, klog.Errorf)
 		assert.Equal(t, 0, queue.NumRequeues(key))
 	})
 }

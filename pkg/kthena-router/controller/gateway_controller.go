@@ -130,7 +130,7 @@ func (c *GatewayController) processNextWorkItem() bool {
 	}
 
 	err := c.syncHandler(key)
-	retryOrForget(c.workqueue, "gateway", key, err)
+	retryOrForget(c.workqueue, "gateway", key, err, klog.Errorf)
 	return true
 }
 

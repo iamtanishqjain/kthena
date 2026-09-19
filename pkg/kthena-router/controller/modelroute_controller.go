@@ -120,7 +120,7 @@ func (c *ModelRouteController) processNextWorkItem() bool {
 	}
 
 	err := c.syncHandler(key)
-	retryOrForget(c.workqueue, "modelRoute", key, err)
+	retryOrForget(c.workqueue, "modelRoute", key, err, klog.V(2).Infof)
 	return true
 }
 

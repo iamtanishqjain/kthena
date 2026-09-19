@@ -118,7 +118,7 @@ func (c *InferencePoolController) processNextWorkItem() bool {
 	}
 
 	err := c.syncHandler(key)
-	retryOrForget(c.workqueue, "inferencepool", key, err)
+	retryOrForget(c.workqueue, "inferencepool", key, err, klog.Errorf)
 	return true
 }
 

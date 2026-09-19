@@ -159,7 +159,7 @@ func (c *HTTPRouteController) processNextWorkItem() bool {
 	}
 
 	err := c.syncHandler(key)
-	retryOrForget(c.workqueue, "httproute", key, err)
+	retryOrForget(c.workqueue, "httproute", key, err, klog.Errorf)
 	return true
 }
 
