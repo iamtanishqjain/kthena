@@ -17,6 +17,7 @@ limitations under the License.
 package datastore
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -25,6 +26,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -36,6 +38,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog/v2"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	aiv1alpha1 "github.com/volcano-sh/kthena/pkg/apis/networking/v1alpha1"
@@ -2191,6 +2194,59 @@ func TestAddOrUpdatePod_SkipsDiscoveryWhenAPIKeyIsMisconfigured(t *testing.T) {
 
 	assert.Equal(t, int64(0), inspector.modelsCalls.Load(),
 		"a configured but unresolvable API key must not fall back to an anonymous probe")
+}
+
+func TestAddOrUpdatePod_ReportsAMisconfiguredAPIKeyOnce(t *testing.T) {
+	state := klog.CaptureState()
+	defer state.Restore()
+
+	var logBuffer bytes.Buffer
+	klog.LogToStderr(false)
+	klog.SetOutput(&logBuffer)
+
+	const reportedLine = "skipping model discovery for ModelServer default/ms1"
+
+	s := newStore(&fakePodRuntimeInspector{})
+
+	ms := createTestModelServer("default", "ms1", aiv1alpha1.VLLM)
+	ms.Spec.WorkloadPort.Port = 8000
+	ms.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "wrong-name"},
+		Key:                  "api-key",
+	}
+	s.AddOrUpdateModelServer(ms, sets.New[types.NamespacedName]())
+
+	pod := createTestPod("default", "fresh-pod")
+	pod.Status.PodIP = "10.0.0.1"
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations["kthena.io/engine"] = "vLLM"
+	assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{ms}))
+
+	klog.Flush()
+	reported := strings.Count(logBuffer.String(), reportedLine)
+	assert.NotZero(t, reported, "the misconfiguration must be reported when it first appears")
+
+	// The scrape loop reaches this once per pod per interval, a second by default.
+	for i := 0; i < 5; i++ {
+		s.updatePodModels(s.GetPodInfo(utils.GetNamespaceName(pod)))
+	}
+	klog.Flush()
+
+	assert.Equal(t, reported, strings.Count(logBuffer.String(), reportedLine),
+		"a standing misconfiguration must not be reported again on every scrape")
+
+	// The operator creates the Secret the ModelServer was pointing at.
+	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "wrong-name"},
+		Data:       map[string][]byte{"api-key": []byte("s3cret\n")},
+	}))
+	s.updatePodModels(s.GetPodInfo(utils.GetNamespaceName(pod)))
+	klog.Flush()
+
+	assert.Contains(t, logBuffer.String(), "resolves again",
+		"a misconfiguration that clears must say so, not just go quiet")
 }
 
 func TestAddOrUpdatePod_TakesPortAndAPIKeyFromTheSameModelServer(t *testing.T) {

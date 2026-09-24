@@ -392,6 +392,9 @@ type store struct {
 	externalModelProviders sync.Map // map[types.NamespacedName]*aiv1alpha1.ExternalModelProvider
 	pods                   sync.Map // map[types.NamespacedName]*PodInfo
 	secrets                sync.Map // map[types.NamespacedName]*corev1.Secret
+	// apiKeyErrors is the last API key failure reported for a ModelServer, so a
+	// misconfiguration is logged when it appears instead of on every scrape.
+	apiKeyErrors sync.Map // map[types.NamespacedName]string
 
 	// onFlightCounter is optional. When non-nil (Redis-backed), in-flight request
 	// counts are shared across all router replicas via Redis. When nil, only the
@@ -936,6 +939,7 @@ func (s *store) AddOrUpdateModelServer(ms *aiv1alpha1.ModelServer, pods sets.Set
 }
 
 func (s *store) DeleteModelServer(ms types.NamespacedName) error {
+	s.apiKeyErrors.Delete(ms)
 	value, ok := s.modelServer.LoadAndDelete(ms)
 	if !ok {
 		return nil
@@ -1805,10 +1809,9 @@ func (s *store) updatePodModels(podInfo *PodInfo) {
 	}
 	ms := s.modelServerForPod(podInfo)
 	apiKey, err := s.modelServerAPIKey(ms)
+	s.reportAPIKeyError(ms, err)
 	if err != nil {
 		// Probing anonymously would hide the misconfiguration.
-		klog.V(4).Infof("skipping model discovery for pod %s/%s: %v",
-			podObj.GetNamespace(), podObj.GetName(), err)
 		return
 	}
 
@@ -1863,6 +1866,30 @@ func (s *store) modelServerForPod(podInfo *PodInfo) *aiv1alpha1.ModelServer {
 		}
 	}
 	return fallback
+}
+
+// reportAPIKeyError reports an API key failure when it appears and stays quiet
+// until the error changes or clears. updatePodModels runs once per pod per scrape
+// interval, a second by default, so logging every call would bury the rest of the
+// log. Recovery is reported too, so a fixed Secret does not look like a router
+// that simply stopped complaining.
+func (s *store) reportAPIKeyError(ms *aiv1alpha1.ModelServer, err error) {
+	if ms == nil {
+		return
+	}
+	name := utils.GetNamespaceName(ms)
+	if err == nil {
+		if _, reported := s.apiKeyErrors.LoadAndDelete(name); reported {
+			klog.Infof("API key for ModelServer %s resolves again, resuming model discovery", name)
+		}
+		return
+	}
+
+	msg := err.Error()
+	if previous, reported := s.apiKeyErrors.Swap(name, msg); reported && previous.(string) == msg {
+		return
+	}
+	klog.Warningf("skipping model discovery for ModelServer %s: %v", name, err)
 }
 
 // modelServerAPIKey returns "" with no error when no key is configured, and an
