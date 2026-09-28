@@ -2288,6 +2288,37 @@ func TestAddOrUpdatePod_PrefersTheModelServerWhoseAPIKeyResolves(t *testing.T) {
 	assert.Equal(t, "s3cret", gotAPIKey, "a resolvable key must win over name order")
 }
 
+func TestAddOrUpdatePod_PrefersTheModelServerThatConfiguresAPort(t *testing.T) {
+	var gotPort uint32
+	inspector := &fakePodRuntimeInspector{
+		modelsFn: func(_ string, _ *corev1.Pod, port uint32, _ string) ([]string, error) {
+			gotPort = port
+			return []string{"base-model"}, nil
+		},
+	}
+	s := newStore(inspector)
+
+	// Neither configures a key, so the port is what separates them. Picking the
+	// first name would probe port 0.
+	noPort := createTestModelServer("default", "aaa", aiv1alpha1.VLLM)
+	withPort := createTestModelServer("default", "zzz", aiv1alpha1.VLLM)
+	withPort.Spec.WorkloadPort.Port = 8000
+
+	s.AddOrUpdateModelServer(noPort, sets.New[types.NamespacedName]())
+	s.AddOrUpdateModelServer(withPort, sets.New[types.NamespacedName]())
+
+	pod := createTestPod("default", "fresh-pod")
+	pod.Status.PodIP = "10.0.0.1"
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations["kthena.io/engine"] = "vLLM"
+	assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{noPort, withPort}))
+
+	assert.Equal(t, uint32(8000), gotPort,
+		"a configured port must still win when no candidate has a key")
+}
+
 func TestAddOrUpdatePod_UsesTheUnauthenticatedModelServerWhenAnotherKeyIsBroken(t *testing.T) {
 	inspector := &fakePodRuntimeInspector{
 		modelsFn: func(_ string, _ *corev1.Pod, _ uint32, _ string) ([]string, error) {

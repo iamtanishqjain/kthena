@@ -1868,10 +1868,11 @@ func workloadPort(ms *aiv1alpha1.ModelServer) uint32 {
 }
 
 // modelServerForPod picks the ModelServer whose port and API key discovery uses
-// for this pod. A pod can match several, so prefer one whose key resolves: going
-// by name alone would let a ModelServer with no credential mask a correctly
-// configured one, and renaming either would change whether discovery works.
-// Order of preference is a usable key, then no key configured, then none.
+// for this pod, so the two always come from the same one. A pod can match
+// several. Going by name alone would let a ModelServer with no credential mask
+// a correctly configured one, and renaming either would change whether
+// discovery works, so candidates are ranked instead: a usable key counts for
+// more than a configured port, and names only break a tie.
 //
 // An error is returned only when every candidate that configures a key fails to
 // resolve one, since probing anonymously would then hide the misconfiguration.
@@ -1881,7 +1882,9 @@ func (s *store) modelServerForPod(podInfo *PodInfo) (*aiv1alpha1.ModelServer, st
 	msNames := podInfo.GetModelServers().UnsortedList()
 	sort.Slice(msNames, func(i, j int) bool { return msNames[i].String() < msNames[j].String() })
 
-	var unauthenticated *aiv1alpha1.ModelServer
+	var best *aiv1alpha1.ModelServer
+	var bestKey string
+	bestRank := -1
 	var brokenErr error
 
 	for _, msName := range msNames {
@@ -1891,22 +1894,29 @@ func (s *store) modelServerForPod(podInfo *PodInfo) (*aiv1alpha1.ModelServer, st
 		}
 		key, err := s.modelServerAPIKey(ms)
 		s.reportAPIKeyError(ms, err)
-		switch {
-		case err != nil:
+		if err != nil {
 			if brokenErr == nil {
 				brokenErr = err
 			}
-		case key != "":
-			return ms, key, nil
-		case unauthenticated == nil:
-			unauthenticated = ms
+			continue
+		}
+
+		rank := 0
+		if key != "" {
+			rank += 2
+		}
+		if ms.Spec.WorkloadPort.Port > 0 {
+			rank++
+		}
+		if rank > bestRank {
+			best, bestKey, bestRank = ms, key, rank
 		}
 	}
 
-	if unauthenticated != nil {
-		return unauthenticated, "", nil
+	if best == nil {
+		return nil, "", brokenErr
 	}
-	return nil, "", brokenErr
+	return best, bestKey, nil
 }
 
 // reportAPIKeyError reports an API key failure when it appears and stays quiet
