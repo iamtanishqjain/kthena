@@ -2249,6 +2249,77 @@ func TestAddOrUpdatePod_ReportsAMisconfiguredAPIKeyOnce(t *testing.T) {
 		"a misconfiguration that clears must say so, not just go quiet")
 }
 
+func TestAddOrUpdatePod_PrefersTheModelServerWhoseAPIKeyResolves(t *testing.T) {
+	var gotAPIKey string
+	inspector := &fakePodRuntimeInspector{
+		modelsFn: func(_ string, _ *corev1.Pod, _ uint32, apiKey string) ([]string, error) {
+			gotAPIKey = apiKey
+			return []string{"base-model"}, nil
+		},
+	}
+	s := newStore(inspector)
+
+	// Both select the pod on the same port; only the one sorting last has a key.
+	// Picking by name alone would probe anonymously and get a 401 forever.
+	noKey := createTestModelServer("default", "aaa", aiv1alpha1.VLLM)
+	noKey.Spec.WorkloadPort.Port = 8000
+	withKey := createTestModelServer("default", "zzz", aiv1alpha1.VLLM)
+	withKey.Spec.WorkloadPort.Port = 8000
+	withKey.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "vllm-key"},
+		Key:                  "api-key",
+	}
+
+	s.AddOrUpdateModelServer(noKey, sets.New[types.NamespacedName]())
+	s.AddOrUpdateModelServer(withKey, sets.New[types.NamespacedName]())
+	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "vllm-key"},
+		Data:       map[string][]byte{"api-key": []byte("s3cret")},
+	}))
+
+	pod := createTestPod("default", "fresh-pod")
+	pod.Status.PodIP = "10.0.0.1"
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations["kthena.io/engine"] = "vLLM"
+	assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{noKey, withKey}))
+
+	assert.Equal(t, "s3cret", gotAPIKey, "a resolvable key must win over name order")
+}
+
+func TestAddOrUpdatePod_UsesTheUnauthenticatedModelServerWhenAnotherKeyIsBroken(t *testing.T) {
+	inspector := &fakePodRuntimeInspector{
+		modelsFn: func(_ string, _ *corev1.Pod, _ uint32, _ string) ([]string, error) {
+			return []string{"base-model"}, nil
+		},
+	}
+	s := newStore(inspector)
+
+	noKey := createTestModelServer("default", "aaa", aiv1alpha1.VLLM)
+	noKey.Spec.WorkloadPort.Port = 8000
+	broken := createTestModelServer("default", "zzz", aiv1alpha1.VLLM)
+	broken.Spec.WorkloadPort.Port = 8000
+	broken.Spec.APIKeySecretRef = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "missing"},
+		Key:                  "api-key",
+	}
+
+	s.AddOrUpdateModelServer(noKey, sets.New[types.NamespacedName]())
+	s.AddOrUpdateModelServer(broken, sets.New[types.NamespacedName]())
+
+	pod := createTestPod("default", "fresh-pod")
+	pod.Status.PodIP = "10.0.0.1"
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations["kthena.io/engine"] = "vLLM"
+	assert.NoError(t, s.AddOrUpdatePod(pod, []*aiv1alpha1.ModelServer{noKey, broken}))
+
+	assert.Equal(t, int64(1), inspector.modelsCalls.Load(),
+		"a ModelServer that configures no key is a valid choice even when a sibling's key is broken")
+}
+
 func TestAddOrUpdatePod_TakesPortAndAPIKeyFromTheSameModelServer(t *testing.T) {
 	type call struct {
 		port   uint32

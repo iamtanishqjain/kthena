@@ -27,6 +27,10 @@ import (
 	"github.com/volcano-sh/kthena/pkg/kthena-router/backend/vllm"
 )
 
+// ErrUnauthorized reports that the backend refused the credential. Both engines
+// discover models through the same request, so one sentinel covers them.
+var ErrUnauthorized = vllm.ErrUnauthorized
+
 type MetricsProvider interface {
 	GetPodMetrics(pod *corev1.Pod, port uint32) (map[string]*dto.MetricFamily, error)
 	GetPodModels(pod *corev1.Pod, port uint32, apiKey string) ([]string, error)

@@ -63,3 +63,11 @@ func TestFetchPodModelsWithoutAPIKeyIsUnauthorized(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 401")
 }
+
+func TestFetchPodModelsReportsUnauthorizedDistinctly(t *testing.T) {
+	host, port := apiKeyProtectedBackend(t, "s3cret")
+
+	_, err := FetchPodModels(host, port, "wrong-key")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnauthorized, "a rejected key must be distinguishable from any other failure")
+}
