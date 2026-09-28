@@ -18,6 +18,7 @@ package vllm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,10 @@ import (
 
 	"github.com/volcano-sh/kthena/pkg/kthena-router/backend/metrics"
 )
+
+// ErrUnauthorized reports that the backend refused the credential, as opposed to
+// the router being unable to resolve one.
+var ErrUnauthorized = errors.New("backend rejected the API key")
 
 type Model struct {
 	ID string `json:"id"`
@@ -53,6 +58,9 @@ func FetchPodModels(podIP string, port uint32, apiKey string) ([]string, error) 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("%w: pod IP %s returned HTTP %d", ErrUnauthorized, podIP, resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get models from pod IP %s: HTTP %d", podIP, resp.StatusCode)
 	}
