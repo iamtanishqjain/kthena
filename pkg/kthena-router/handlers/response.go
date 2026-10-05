@@ -52,8 +52,10 @@ func ParseOpenAIResponseBody(resp []byte) (*OpenAIResponse, error) {
 }
 
 const (
-	streamingRespPrefix = "data: "
-	streamingEndMsg     = "data: [DONE]"
+	// SSE makes the space after the colon optional and strips at most one, so
+	// the prefix is matched without it and the remainder is trimmed.
+	streamingRespPrefix = "data:"
+	streamingEndMsg     = "[DONE]"
 )
 
 // Example message if "stream_options": {"include_usage": "true"} is included in the request:
@@ -71,10 +73,14 @@ func ParseStreamRespForUsage(
 	responseText string,
 ) OpenAIResponse {
 	var response OpenAIResponse
-	if !strings.HasPrefix(responseText, streamingRespPrefix) || strings.HasPrefix(responseText, streamingEndMsg) {
+	line := strings.TrimSpace(responseText)
+	if !strings.HasPrefix(line, streamingRespPrefix) {
 		return response
 	}
-	content := strings.TrimPrefix(responseText, streamingRespPrefix)
+	content := strings.TrimSpace(strings.TrimPrefix(line, streamingRespPrefix))
+	if content == "" || content == streamingEndMsg {
+		return response
+	}
 
 	byteSlice := []byte(content)
 	if err := json.Unmarshal(byteSlice, &response); err != nil {
