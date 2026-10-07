@@ -169,11 +169,21 @@ func handleRandomPluginConflicts(scorePluginMap map[string]int) map[string]int {
 }
 
 func unmarshalPlugins(schedulerConfig *SchedulerConfiguration) (map[string]int, []string, error) {
+	// A zero weight multiplies the plugin's scores away, so an entry that omits
+	// weight is enabled but takes no part in pod selection. Fall back to the
+	// weight the built-in configuration uses.
+	const defaultScoreWeight = 1
+
 	var filterPlugins []string
 	scorePluginMap := make(map[string]int)
 	if len(schedulerConfig.Plugins.Score.Enabled) > 0 {
 		for _, plugin := range schedulerConfig.Plugins.Score.Enabled {
-			scorePluginMap[plugin.Name] = plugin.Weight
+			weight := plugin.Weight
+			if weight == 0 {
+				klog.Warningf("Score plugin %q has no weight set, using %d", plugin.Name, defaultScoreWeight)
+				weight = defaultScoreWeight
+			}
+			scorePluginMap[plugin.Name] = weight
 		}
 	}
 

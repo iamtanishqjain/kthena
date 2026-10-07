@@ -112,6 +112,48 @@ func TestLoadSchedulerConfigRejectsInvalidLeastLatencyWeight(t *testing.T) {
 	}
 }
 
+func TestLoadSchedulerConfigDefaultsOmittedScoreWeight(t *testing.T) {
+	tt := []struct {
+		name       string
+		weightLine string
+		expect     int
+	}{
+		{name: "weight omitted", weightLine: "", expect: 1},
+		{name: "weight zero", weightLine: "        weight: 0", expect: 1},
+		{name: "weight set", weightLine: "        weight: 3", expect: 3},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "routerConfiguration.yaml")
+			config := fmt.Sprintf(`scheduler:
+  plugins:
+    Score:
+      enabled:
+      - name: least-request
+%s
+`, tc.weightLine)
+			if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+				t.Fatalf("write router configuration: %v", err)
+			}
+
+			routerConfig, err := ParseRouterConfig(configPath)
+			if err != nil {
+				t.Fatalf("parse router configuration: %v", err)
+			}
+			scorePluginMap, _, _, err := LoadSchedulerConfig(&routerConfig.Scheduler)
+			if err != nil {
+				t.Fatalf("load scheduler configuration: %v", err)
+			}
+			// A zero weight leaves the plugin enabled but drops its scores from pod
+			// selection, which makes the configured policy a no-op.
+			if got := scorePluginMap["least-request"]; got != tc.expect {
+				t.Errorf("expected weight %d, got %d", tc.expect, got)
+			}
+		})
+	}
+}
+
 func TestParseRouterConfigRejectsNonScalarPluginName(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "routerConfiguration.yaml")
 	config := `scheduler:
