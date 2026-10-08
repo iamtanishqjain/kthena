@@ -52,8 +52,8 @@ func ParseOpenAIResponseBody(resp []byte) (*OpenAIResponse, error) {
 }
 
 const (
-	// SSE makes the space after the colon optional and strips at most one, so
-	// the prefix is matched without it and the remainder is trimmed.
+	// The space after the colon is optional and exactly one is stripped, so the
+	// prefix is matched without it and a single leading space is removed.
 	streamingRespPrefix = "data:"
 	streamingEndMsg     = "[DONE]"
 )
@@ -73,11 +73,11 @@ func ParseStreamRespForUsage(
 	responseText string,
 ) OpenAIResponse {
 	var response OpenAIResponse
-	line := strings.TrimSpace(responseText)
+	line := strings.TrimRight(responseText, "\r\n")
 	if !strings.HasPrefix(line, streamingRespPrefix) {
 		return response
 	}
-	content := strings.TrimSpace(strings.TrimPrefix(line, streamingRespPrefix))
+	content := strings.TrimPrefix(strings.TrimPrefix(line, streamingRespPrefix), " ")
 	if content == "" || content == streamingEndMsg {
 		return response
 	}

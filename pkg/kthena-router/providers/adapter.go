@@ -468,15 +468,15 @@ const (
 	streamDoneSentinel = "[DONE]"
 )
 
-// streamDataField returns the value of an SSE data field. SSE makes the space
-// after the colon optional and strips at most one, so nothing may match on the
-// raw line: a backend writing "data:[DONE]" means the same as "data: [DONE]".
+// streamDataField returns the value of an SSE data field. The space after the
+// colon is optional and exactly one is stripped, so "data:[DONE]" carries the
+// same value as "data: [DONE]" while "data:  [DONE]" keeps a leading space.
 func streamDataField(line string) (string, bool) {
-	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, streamDataPrefix) {
+	line = strings.TrimRight(line, "\r\n")
+	if !strings.HasPrefix(line, streamDataPrefix) {
 		return "", false
 	}
-	return strings.TrimSpace(strings.TrimPrefix(trimmed, streamDataPrefix)), true
+	return strings.TrimPrefix(strings.TrimPrefix(line, streamDataPrefix), " "), true
 }
 
 // isStreamDoneLine reports whether line is the [DONE] terminator.
