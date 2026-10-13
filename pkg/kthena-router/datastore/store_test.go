@@ -2180,7 +2180,7 @@ func TestAddOrUpdatePod_PassesModelServerAPIKeyToBackend(t *testing.T) {
 		Key:                  "api-key",
 	}
 	s.AddOrUpdateModelServer(ms, sets.New[types.NamespacedName]())
-	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
+	assert.NoError(t, s.AddOrUpdateModelServerSecret(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "vllm-key"},
 		// Trailing newline is what kubectl create secret --from-file produces.
 		Data: map[string][]byte{"api-key": []byte("s3cret\n")},
@@ -2269,7 +2269,7 @@ func TestAddOrUpdatePod_ReportsAMisconfiguredAPIKeyOnce(t *testing.T) {
 		"a standing misconfiguration must not be reported again on every scrape")
 
 	// The operator creates the Secret the ModelServer was pointing at.
-	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
+	assert.NoError(t, s.AddOrUpdateModelServerSecret(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "wrong-name"},
 		Data:       map[string][]byte{"api-key": []byte("s3cret\n")},
 	}))
@@ -2303,7 +2303,7 @@ func TestAddOrUpdatePod_PrefersTheModelServerWhoseAPIKeyResolves(t *testing.T) {
 
 	s.AddOrUpdateModelServer(noKey, sets.New[types.NamespacedName]())
 	s.AddOrUpdateModelServer(withKey, sets.New[types.NamespacedName]())
-	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
+	assert.NoError(t, s.AddOrUpdateModelServerSecret(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "vllm-key"},
 		Data:       map[string][]byte{"api-key": []byte("s3cret")},
 	}))
@@ -2412,7 +2412,7 @@ func TestAddOrUpdatePod_TakesPortAndAPIKeyFromTheSameModelServer(t *testing.T) {
 
 	s.AddOrUpdateModelServer(first, sets.New[types.NamespacedName]())
 	s.AddOrUpdateModelServer(second, sets.New[types.NamespacedName]())
-	assert.NoError(t, s.AddOrUpdateSecret(&corev1.Secret{
+	assert.NoError(t, s.AddOrUpdateModelServerSecret(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "keys"},
 		Data:       map[string][]byte{"aaa": []byte("key-aaa"), "zzz": []byte("key-zzz")},
 	}))

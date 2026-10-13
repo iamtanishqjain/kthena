@@ -240,6 +240,9 @@ type Store interface {
 	AddOrUpdateSecret(secret *corev1.Secret) error
 	DeleteSecret(name types.NamespacedName) error
 	GetSecret(name types.NamespacedName) *corev1.Secret
+	AddOrUpdateModelServerSecret(secret *corev1.Secret) error
+	DeleteModelServerSecret(name types.NamespacedName) error
+	GetModelServerSecret(name types.NamespacedName) *corev1.Secret
 
 	// PDGroup methods for efficient PD scheduling
 	GetDecodePods(modelServerName types.NamespacedName) ([]*PodInfo, error)
@@ -395,6 +398,10 @@ type store struct {
 	externalModelProviders sync.Map // map[types.NamespacedName]*aiv1alpha1.ExternalModelProvider
 	pods                   sync.Map // map[types.NamespacedName]*PodInfo
 	secrets                sync.Map // map[types.NamespacedName]*corev1.Secret
+	// modelServerSecrets holds ModelServer API keys. Kept apart from secrets
+	// because ModelServer credentials and ExternalModelProvider credentials are
+	// unrelated and are synced by different controllers.
+	modelServerSecrets sync.Map // map[types.NamespacedName]*corev1.Secret
 	// apiKeyErrors is the last API key failure reported for a ModelServer, so a
 	// misconfiguration is logged when it appears instead of on every scrape.
 	apiKeyErrors sync.Map // map[types.NamespacedName]string
@@ -1050,6 +1057,23 @@ func (s *store) DeleteSecret(name types.NamespacedName) error {
 
 func (s *store) GetSecret(name types.NamespacedName) *corev1.Secret {
 	if value, ok := s.secrets.Load(name); ok {
+		return value.(*corev1.Secret)
+	}
+	return nil
+}
+
+func (s *store) AddOrUpdateModelServerSecret(secret *corev1.Secret) error {
+	s.modelServerSecrets.Store(utils.GetNamespaceName(secret), secret)
+	return nil
+}
+
+func (s *store) DeleteModelServerSecret(name types.NamespacedName) error {
+	s.modelServerSecrets.Delete(name)
+	return nil
+}
+
+func (s *store) GetModelServerSecret(name types.NamespacedName) *corev1.Secret {
+	if value, ok := s.modelServerSecrets.Load(name); ok {
 		return value.(*corev1.Secret)
 	}
 	return nil
@@ -1983,7 +2007,7 @@ func (s *store) modelServerAPIKey(ms *aiv1alpha1.ModelServer) (string, error) {
 
 	ref := ms.Spec.APIKeySecretRef
 	secretName := types.NamespacedName{Namespace: ms.Namespace, Name: ref.Name}
-	secret := s.GetSecret(secretName)
+	secret := s.GetModelServerSecret(secretName)
 	if secret == nil {
 		return "", fmt.Errorf("secret %s is not available, check it exists and carries the %s label",
 			secretName, aiv1alpha1.ExternalModelProviderSecretLabelKey)
