@@ -104,11 +104,20 @@ func NewModelServerController(
 	var err error
 	// Register ModelServer event handlers
 	controller.modelServerRegistration, err = modelServerInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: controller.enqueueModelServer,
+		AddFunc: func(obj interface{}) {
+			controller.enqueueModelServer(obj)
+			controller.enqueueModelServerSecret(obj)
+		},
 		UpdateFunc: func(old, new interface{}) {
 			controller.enqueueModelServer(new)
+			// Both, so a changed apiKeySecretRef drops the old credential.
+			controller.enqueueModelServerSecret(old)
+			controller.enqueueModelServerSecret(new)
 		},
-		DeleteFunc: controller.enqueueModelServer,
+		DeleteFunc: func(obj interface{}) {
+			controller.enqueueModelServer(obj)
+			controller.enqueueModelServerSecret(obj)
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to add event handler for modelserver controller: %w", err)
@@ -429,8 +438,12 @@ func (c *ModelServerController) enqueueSecret(obj interface{}) {
 	c.workqueue.Add(QueueItem{ResourceType: ResourceTypeSecret, Key: key})
 }
 
-func (c *ModelServerController) enqueueModelServerSecret(ms *aiv1alpha1.ModelServer) {
-	if ms == nil || ms.Spec.APIKeySecretRef == nil || ms.Spec.APIKeySecretRef.Name == "" {
+func (c *ModelServerController) enqueueModelServerSecret(obj interface{}) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+	ms, ok := obj.(*aiv1alpha1.ModelServer)
+	if !ok || ms.Spec.APIKeySecretRef == nil || ms.Spec.APIKeySecretRef.Name == "" {
 		return
 	}
 	secretName := types.NamespacedName{Namespace: ms.Namespace, Name: ms.Spec.APIKeySecretRef.Name}
