@@ -1283,3 +1283,37 @@ func TestModelServerController_SecretSyncLeavesProviderCredentialsAlone(t *testi
 	assert.NotNil(t, store.GetSecret(secretName), "the provider credential must not be touched")
 	assert.Nil(t, store.GetModelServerSecret(secretName))
 }
+
+func TestModelServerController_AddingAModelServerQueuesItsSecret(t *testing.T) {
+	controller, _, _ := newSecretSyncController(t)
+
+	// Without this the credential only syncs when the Secret itself changes,
+	// so a ModelServer that gains an apiKeySecretRef is never picked up.
+	controller.enqueueModelServerSecret(modelServerWithAPIKeySecretRef("default", "ms1", "vllm-key"))
+
+	require.Equal(t, 1, controller.workqueue.Len())
+	item, _ := controller.workqueue.Get()
+	assert.Equal(t, ResourceTypeSecret, item.ResourceType)
+	assert.Equal(t, "default/vllm-key", item.Key)
+}
+
+func TestModelServerController_AModelServerWithoutAKeyQueuesNothing(t *testing.T) {
+	controller, _, _ := newSecretSyncController(t)
+
+	controller.enqueueModelServerSecret(&aiv1alpha1.ModelServer{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "ms1"},
+	})
+
+	assert.Equal(t, 0, controller.workqueue.Len())
+}
+
+func TestModelServerController_ATombstonedModelServerStillQueuesItsSecret(t *testing.T) {
+	controller, _, _ := newSecretSyncController(t)
+
+	controller.enqueueModelServerSecret(cache.DeletedFinalStateUnknown{
+		Key: "default/ms1",
+		Obj: modelServerWithAPIKeySecretRef("default", "ms1", "vllm-key"),
+	})
+
+	assert.Equal(t, 1, controller.workqueue.Len())
+}
